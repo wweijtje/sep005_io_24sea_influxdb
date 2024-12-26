@@ -155,11 +155,11 @@ class Channel(object):
         if not is_equidistant:
             raise ValueError(f'{self.name}: Samples missing from channel')
 
-def build_flux_query(start, location, stop=None, bucket:str='metrics', duration:int=600, sensor_list:Union[None,Iterable]=None):
+def build_flux_query(start, location, stop=None, bucket:str='metrics', duration:int=600, sensor_type:Union[None, Iterable]=None, sensor_list:Union[None,Iterable]=None):
     """
     Translates the typical 24SEA nomenclature into an associated influxdb query.
 
-    :param location: location of the sensors
+    :param location: measurement location, e.g. BBC01,
     :param bucket: defaults to 'metrics'
     :param duration: If no `stop` is specified, take duration [s] from start
     :return:
@@ -180,7 +180,7 @@ def build_flux_query(start, location, stop=None, bucket:str='metrics', duration:
 
     # %% Define the filters
 
-    # Only take samples where the "sensor" tag is specified
+    # Only take samples where the "sensor" tag is specified, this targets just the measurements
     query += f"""
     |> filter(fn: (r) => exists r["sensor"])  
     """
@@ -189,6 +189,14 @@ def build_flux_query(start, location, stop=None, bucket:str='metrics', duration:
     query += f"""
     |> filter(fn: (r) => r["location"] == "{location}")
     """
+
+    # When specified, isolate the sensors based on the sensor_type
+    if sensor_type:
+        filter_conditions = " or ".join([f'r["type"] == "{st}"' for st in sensor_type])
+        query += f"""
+             |> filter(fn: (r) => {filter_conditions})
+            """
+
     # When specified, isolate the sensors based on the sensor_list
     if sensor_list:
         filter_conditions = " or ".join([f'r["sensor"] == "{sensor}"' for sensor in sensor_list])
