@@ -1,3 +1,5 @@
+
+
 import configparser
 import datetime
 import time
@@ -11,10 +13,11 @@ from influxdb_client import InfluxDBClient
 from sep005_io_24sea_influxdb.utils import handle_timestamp
 
 class Influx24SEAreader():
-    def __init__(self, client:Union[None,InfluxDBClient]=None, bucket:str='metrics', qa:bool=True, verbose:bool=False):
+    def __init__(self, client:Union[None,InfluxDBClient]=None, bucket:str='metrics', qa:bool=True, verbose:bool=False, config_file=None):
         self.client = client
         self.bucket = bucket
         self.channels = []
+        self.config_file =config_file
 
         self.qa = qa
         self.verbose = verbose
@@ -34,7 +37,7 @@ class Influx24SEAreader():
                 if kw in config['influx2']:
                     kwargs[kw] = config['influx2'][kw]
 
-        return cls(client=client, **kwargs)
+        return cls(client=client, config_file=config_file, **kwargs)
 
     @property
     def df(self):
@@ -42,7 +45,11 @@ class Influx24SEAreader():
 
     @df.setter
     def df(self, new_df:pd.DataFrame):
-        new_df.drop(columns=['result', 'table'], inplace=True)
+
+        try:
+            new_df.drop(columns=['result', 'table'], inplace=True)
+        except KeyError:
+            raise ValueError(f'Empty dataframe collected from InfluxDB, check your query.')
         self._df = new_df
         self._df.set_index('_time', inplace=True)
         self._df.index = pd.to_datetime(self._df.index)
@@ -70,7 +77,7 @@ class Influx24SEAreader():
         if self.verbose:
             print('QA (missing samples) : Imported signals are equidistant spaced on index')
 
-    def get(self, start, location, stop=None, duration:int=600, sensor_list:Union[None,Iterable]=None):
+    def get(self, start, location, stop=None, duration:int=600, sensor_type:Union[None, Iterable]=None, sensor_list:Union[None,Iterable]=None):
         """
 
         :param start:
@@ -82,22 +89,37 @@ class Influx24SEAreader():
         :return:
         """
         t_0 = time.time()
-
         query = build_flux_query(
             start=start,
             location=location,
             stop=stop,
             bucket=self.bucket,
             duration=duration,
+            sensor_type=sensor_type,
             sensor_list=sensor_list
         )
 
-        with self.client as client:
-            query_api = client.query_api()
-            self.df = query_api.query_data_frame(query=query)
+        query_api = self.client.query_api()
+        result = query_api.query_data_frame(query=query)
+
+        self.df = result
 
         if self.verbose:
             print(f'Time elapsed: {time.time() - t_0}')
+
+    def __enter__(self):
+        if self.client.api_client:
+           # Do nothing
+            pass
+        else:
+            # Restart the client
+            if self.config_file:
+                if self.verbose:
+                    print('Reinitializing InfluxDB client from configuration file')
+                self.client = InfluxDBClient.from_config_file(config_file=self.config_file)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.client.close()
 
     def to_sep005(self):
         """_summary_
@@ -108,15 +130,12 @@ class Influx24SEAreader():
             list: signals
         """
         signals = []
-        for chan in self.channels:
-            data = self.df[chan].dropna().to_numpy() # Handle different sample frequencies
-            fs_signal = len(data) / self.duration
-
+        for chan in self.channels: # Handle different sample frequencies
             signal = {
-                'name': chan,
-                'data': data,
+                'name': chan.name,
+                'data': chan.data,
                 'start_timestamp': str(self.start_timestamp),
-                'fs': fs_signal,
+                'fs': chan.fs,
                 'unit_str': '' # This information is not obtainable from the influx db (yet)
             }
             signals.append(signal)
@@ -192,6 +211,8 @@ def build_flux_query(start, location, stop=None, bucket:str='metrics', duration:
 
     # When specified, isolate the sensors based on the sensor_type
     if sensor_type:
+        if isinstance(sensor_type, str):
+            sensor_type = [sensor_type]
         filter_conditions = " or ".join([f'r["type"] == "{st}"' for st in sensor_type])
         query += f"""
              |> filter(fn: (r) => {filter_conditions})

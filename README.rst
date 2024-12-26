@@ -29,16 +29,35 @@ project's ``{project_name}_postprocessing.ini`` configuration file.
     org=24sea
     token=my-token
     verify_ssl=False
-
-
+    bucket=metrics
 
 Using the package
 ------------------
+The key Class is  `Influx24SEAreader` and its '.get()' statement.
+
 
     .. code-block:: python
 
-        from sep005_io_24sea_influxdb import get_timeseries
-        signals = get_timeseries()
+        import datetime
+        from pytz import utc
+        from sep005_io_24sea_influxdb import Influx24SEAreader
+
+        ini_files = # Add path to {project_name}_postprocessing.ini file
+        client = Influx24SEAreader().from_config_file(config_file=ini_file)
+
+        dt = datetime.datetime(2024,11,15,14,tzinfo=utc)
+        location = 'WTG001'
+
+        with client:
+            client.get(
+                start=dt,
+                location='WTG01', # Location_id as in influxdb database
+                sensor_type='ACC', # type as specified in the influxdb
+            )
+
+
+Once collected the data is stored inside the `client` object. E.g. accessible through
+`client.df`. However, it can be directly be exported to sep005 using : `client.to_sep005()`
 
 
 Acknowledgements

@@ -1,6 +1,7 @@
 # Package requirements for users
 numpy>=1.11.0
 sdypy-sep005>=0.1.0
-shorthand_datetime>=0.4.0
+shorthand-datetime>=0.4.0
 pytz
 pandas
+influxdb-client
