@@ -13,7 +13,22 @@ from influxdb_client import InfluxDBClient
 from sep005_io_24sea_influxdb.utils import handle_timestamp
 
 class Influx24SEAreader():
-    def __init__(self, client:Union[None,InfluxDBClient]=None, bucket:str='metrics', qa:bool=True, verbose:bool=False, config_file=None):
+    """
+    Reader class for extracting time-series data from an InfluxDB 2.x instance
+    specifically formatted for 24SEA sensor data structures.
+    """
+    def __init__(self, client:Union[None,InfluxDBClient]=None, bucket:str='metrics', qa:bool=True, verbose:bool=False, config_file=None, sensor_tag='sensor'):
+        """
+        Initializes the reader with connection details and QA preferences.
+
+        Args:
+            client: An existing InfluxDBClient instance.
+            bucket: The target InfluxDB bucket name.
+            qa: If True, performs quality checks (e.g., sample continuity) on data retrieval.
+            verbose: If True, prints logs and query details to the console.
+            config_file: Path to a .ini or .conf file for InfluxDB credentials.
+            sensor_tag: The metadata tag used to identify specific sensors in InfluxDB.
+        """
         self.client = client
         self.bucket = bucket
         self.channels = []
@@ -21,17 +36,25 @@ class Influx24SEAreader():
 
         self.qa = qa
         self.verbose = verbose
+        self.sensor_tag = sensor_tag # Tag based on which the sensors are specified
 
         self._df = None
 
     @classmethod
     def from_config_file(cls, config_file:str, **kwargs):
+        """
+        Factory method to instantiate the reader using a configuration file.
+
+        Args:
+            config_file: Path to the configuration file.
+            **kwargs: Overrides for bucket, qa, verbose, or sensor_tag.
+        """
 
         client = InfluxDBClient.from_config_file(config_file=config_file)
         config = configparser.ConfigParser()
         config.read(config_file)
 
-        for kw in ['bucket', 'qa', 'verbose']:
+        for kw in ['bucket', 'qa', 'verbose', 'sensor_tag']:
             if kw not in kwargs:
                 # kwargs overrule the configuration file
                 if kw in config['influx2']:
@@ -41,10 +64,15 @@ class Influx24SEAreader():
 
     @property
     def df(self):
+
         return self._df
 
     @df.setter
     def df(self, new_df:pd.DataFrame):
+        """
+        Processes and validates the raw DataFrame returned from InfluxDB.
+        Sets the index to datetime and triggers property updates for channels.
+        """
 
         try:
             new_df.drop(columns=['result', 'table'], inplace=True)
@@ -72,6 +100,10 @@ class Influx24SEAreader():
 
     @property
     def missing_samples(self):
+        """
+        Triggers an equidistance check on all channels.
+        Raises ValueError if gaps are detected.
+        """
         for channel in self.channels:
             channel.missing_samples
         if self.verbose:
@@ -79,14 +111,15 @@ class Influx24SEAreader():
 
     def get(self, start, location, stop=None, duration:int=600, sensor_type:Union[None, Iterable]=None, sensor_list:Union[None,Iterable]=None):
         """
+        Queries InfluxDB for specific location/sensor data and loads it into the object.
 
-        :param start:
-        :param location:
-        :param stop:
-        :param bucket:
-        :param duration:
-        :param sensor_list:
-        :return:
+        Args:
+            start: Start time (string, datetime, or int timestamp).
+            location: The 'location' tag value to filter by.
+            stop: End time (optional).
+            duration: Duration in seconds if 'stop' is not provided.
+            sensor_type: Filter by a 'type' tag (e.g., 'accelerometer').
+            sensor_list: Specific sensor names to include.
         """
         t_0 = time.time()
         query = build_flux_query(
@@ -96,8 +129,12 @@ class Influx24SEAreader():
             bucket=self.bucket,
             duration=duration,
             sensor_type=sensor_type,
-            sensor_list=sensor_list
+            sensor_list=sensor_list,
+            sensor_tag=self.sensor_tag
         )
+        if self.verbose:
+            print(f'Query: {query}')
+            print(f'Sensor tag: {self.sensor_tag}')
 
         query_api = self.client.query_api()
         result = query_api.query_data_frame(query=query)
@@ -174,7 +211,7 @@ class Channel(object):
         if not is_equidistant:
             raise ValueError(f'{self.name}: Samples missing from channel')
 
-def build_flux_query(start, location, stop=None, bucket:str='metrics', duration:int=600, sensor_type:Union[None, Iterable]=None, sensor_list:Union[None,Iterable]=None):
+def build_flux_query(start, location, stop=None, bucket:str='metrics', duration:int=600, sensor_type:Union[None, Iterable]=None, sensor_list:Union[None,Iterable]=None, sensor_tag:str='sensor'):
     """
     Translates the typical 24SEA nomenclature into an associated influxdb query.
 
@@ -200,8 +237,9 @@ def build_flux_query(start, location, stop=None, bucket:str='metrics', duration:
     # %% Define the filters
 
     # Only take samples where the "sensor" tag is specified, this targets just the measurements
+
     query += f"""
-    |> filter(fn: (r) => exists r["sensor"])  
+    |> filter(fn: (r) => exists r["{sensor_tag}"])  
     """
 
     # Isolate on location
@@ -219,17 +257,21 @@ def build_flux_query(start, location, stop=None, bucket:str='metrics', duration:
             """
 
     # When specified, isolate the sensors based on the sensor_list
+    if isinstance(sensor_list, str):
+        sensor_list = [sensor_list]
+
     if sensor_list:
-        filter_conditions = " or ".join([f'r["sensor"] == "{sensor}"' for sensor in sensor_list])
+        filter_conditions = " or ".join([f'r["{sensor_tag}"] == "{sensor}"' for sensor in sensor_list])
         query += f"""
          |> filter(fn: (r) => {filter_conditions})
         """
 
+
     # Optimise the response
     ### The order of these operations matter! keep->pivot->sort
     query += f"""       
-          |> keep(columns: ["_time", "sensor", "_value"])     
-          |> pivot(rowKey:["_time"], columnKey: ["sensor"], valueColumn: "_value")
+          |> keep(columns: ["_time", "{sensor_tag}", "_value"])     
+          |> pivot(rowKey:["_time"], columnKey: ["{sensor_tag}"], valueColumn: "_value")
           |> sort(columns: ["_time"], desc:false)   
     """
 
